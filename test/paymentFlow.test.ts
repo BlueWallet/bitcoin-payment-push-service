@@ -5,7 +5,7 @@ import { join } from "node:path";
 import type { SwapManagerClient } from "@arkade-os/boltz-swap";
 import { Registry } from "../src/registry.js";
 import { createSwapWatcher } from "../src/swapWatcher.js";
-import { attachPaymentNotifications } from "../src/paymentService.js";
+import { attachPaymentNotifications, type PaymentService } from "../src/paymentService.js";
 import { buildServer } from "../src/server.js";
 import type { Notifier } from "../src/notifier/types.js";
 import { silentLogger, mockReverseSwap } from "./helpers.js";
@@ -54,6 +54,7 @@ const flush = () => new Promise((r) => setTimeout(r, 0));
 describe("payment flow (real SwapManager, mocked Boltz events)", () => {
   let dir: string;
   let manager: SwapManagerClient;
+  let payments: PaymentService;
   let app: ReturnType<typeof buildServer>;
   let notify: ReturnType<typeof vi.fn>;
   let notifier: Notifier;
@@ -79,9 +80,15 @@ describe("payment flow (real SwapManager, mocked Boltz events)", () => {
       { network: "mutinynet", apiUrl: "https://api.boltz.mutinynet.arkade.sh", pollIntervalMs: 600_000 },
       silentLogger,
     );
-    const { onSwapUpdate } = await attachPaymentNotifications({ manager, registry, notifier, logger: silentLogger });
+    payments = await attachPaymentNotifications({
+      manager,
+      registry,
+      notifier,
+      logger: silentLogger,
+      sweepIntervalMs: 3_600_000, // effectively disabled for these tests
+    });
 
-    app = buildServer({ registry, manager, simulate: onSwapUpdate, logger: silentLogger });
+    app = buildServer({ registry, manager, simulate: payments.onSwapUpdate, logger: silentLogger });
     await app.ready();
 
     // Start the manager and bring the (fake) websocket up.
@@ -91,6 +98,7 @@ describe("payment flow (real SwapManager, mocked Boltz events)", () => {
   });
 
   afterEach(async () => {
+    payments.stop();
     await manager.stop();
     await app.close();
     (globalThis as Record<string, unknown>).WebSocket = originalWebSocket;
@@ -127,9 +135,9 @@ describe("payment flow (real SwapManager, mocked Boltz events)", () => {
     expect(notify.mock.calls[0]![0]).toEqual({ topic: "phone-topic" });
     expect(notify.mock.calls[0]![1]).toMatchObject({ title: "Payment received" });
 
-    // 5. The swap is marked settled and unwatched.
+    // 5. Once delivered, the swap is pruned from the registry and unwatched.
     const list = await app.inject({ method: "GET", url: "/register" });
-    expect(list.json().registrations[0]).toMatchObject({ status: "invoice.settled", notifiedSettled: true });
+    expect(list.json().registrations).toHaveLength(0);
     expect(await manager.hasSwap("reverse-swap-1")).toBe(false);
   });
 

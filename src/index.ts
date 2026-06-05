@@ -15,20 +15,21 @@ async function main(): Promise<void> {
   );
   const notifier = createNotifier();
 
-  const { onSwapUpdate } = await attachPaymentNotifications({ manager, registry, notifier, logger });
+  const payments = await attachPaymentNotifications({ manager, registry, notifier, logger });
 
   // Resume monitoring everything we were watching before a restart.
-  const pending = registry.active().map((r) => r.swap);
+  const pending = registry.all().map((r) => r.swap);
   await manager.start(pending);
   logger.info({ resumed: pending.length }, "SwapManager started");
 
   const { buildServer } = await import("./server.js");
-  const app = buildServer({ registry, manager, simulate: onSwapUpdate, logger });
+  const app = buildServer({ registry, manager, simulate: payments.onSwapUpdate, logger });
   await app.listen({ host: "0.0.0.0", port: config.PORT });
   logger.info({ port: config.PORT, network: config.NETWORK }, "service listening");
 
   const shutdown = async (signal: string): Promise<void> => {
     logger.info({ signal }, "shutting down");
+    payments.stop();
     await manager.stop();
     await app.close();
     process.exit(0);

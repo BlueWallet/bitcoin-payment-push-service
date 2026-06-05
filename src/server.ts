@@ -57,8 +57,10 @@ export function buildServer(deps: ServerDeps) {
       return reply.code(400).send({ error: "invalid body", issues: parsed.error.issues });
     }
     const swap = parsed.data.swap as unknown as BoltzReverseSwap;
-    const reg = registry.add({ swap, topic: parsed.data.topic, label: parsed.data.label });
+    // Subscribe first: if the manager rejects, nothing is persisted, so the
+    // registry never holds a swap that isn't actually being monitored.
     await manager.addSwap(swap);
+    const reg = registry.add({ swap, topic: parsed.data.topic, label: parsed.data.label });
     return reply.code(201).send({ ok: true, registration: reg });
   });
 
@@ -66,8 +68,13 @@ export function buildServer(deps: ServerDeps) {
 
   app.delete<{ Params: { swapId: string } }>("/register/:swapId", async (request, reply) => {
     const { swapId } = request.params;
-    await manager.removeSwap(swapId);
+    // Remove from the registry first (the source of truth for resubscription);
+    // best-effort unsubscribe from the manager so a manager error can't strand
+    // the entry in the registry.
     const removed = registry.remove(swapId);
+    await manager
+      .removeSwap(swapId)
+      .catch((err) => logger.warn({ err, swapId }, "manager.removeSwap failed"));
     return reply.code(removed ? 200 : 404).send({ ok: removed });
   });
 

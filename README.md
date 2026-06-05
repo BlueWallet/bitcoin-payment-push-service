@@ -107,13 +107,28 @@ pnpm build && pnpm start
 pnpm test
 ```
 
-- `test/registry.test.ts` — registration persistence/reload.
+- `test/registry.test.ts` — registration persistence/reload and no-op write skipping.
 - `test/paymentFlow.test.ts` — a **component test that drives the real
   `@arkade-os/boltz-swap` `SwapManager`** with a mocked `globalThis.WebSocket`,
   feeding mocked Boltz `swap.update` events through the whole pipeline: register →
   subscribe → `transaction.mempool`/`confirmed` (no push) → `invoice.settled`
-  (exactly one push) → swap unwatched. Also covers duplicate-settle de-duplication and
+  (exactly one push) → swap pruned. Also covers duplicate-settle de-duplication and
   the `/simulate` path.
+- `test/deliveryRetry.test.ts` — proves a transient `notify` failure is **not**
+  lost: the reconciliation sweep redelivers a settled-but-undelivered swap and then
+  prunes it.
+
+## Reliability
+
+- **Never lose the one push.** Delivery is retried with backoff, and a periodic
+  reconciliation sweep re-attempts any swap that is settled but still registered —
+  so a transient ntfy outage (or settling while the process was down) is recovered,
+  not dropped. A synchronous in-flight guard prevents a re-entrant event from
+  double-sending.
+- **Bounded state.** A delivered or terminally-failed swap is pruned from both the
+  registry and the manager, so the persisted store stays small.
+- **Crash-safe persistence.** The registry writes to a temp file then `rename()`s,
+  so a crash mid-write can't corrupt `registrations.json`.
 
 ## Notes & extension points
 

@@ -1,4 +1,4 @@
-import { mkdirSync, readFileSync, writeFileSync, existsSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync, renameSync, existsSync } from "node:fs";
 import { dirname } from "node:path";
 import type { BoltzReverseSwap, BoltzSwapStatus } from "@arkade-os/boltz-swap";
 import type { Logger } from "./logger.js";
@@ -10,15 +10,13 @@ export interface Registration {
   label?: string;
   /**
    * The pending reverse swap as supplied by the wallet at registration time.
-   * Re-fed to the SwapManager on restart so monitoring resumes. The wallet may
-   * redact `preimage` (the service never claims), keeping the secret off this box.
+   * `swap.status` is the single source of truth for the swap's state. Re-fed to
+   * the SwapManager on restart so monitoring resumes. The wallet may redact
+   * `preimage` (the service never claims), keeping the secret off this box.
    */
   swap: BoltzReverseSwap;
-  status: BoltzSwapStatus;
   createdAt: number;
   updatedAt: number;
-  /** True once we have sent the "payment received" push, so we never double-notify. */
-  notifiedSettled: boolean;
 }
 
 export interface RegisterInput {
@@ -30,6 +28,10 @@ export interface RegisterInput {
 /**
  * Stores swap-id -> registration mappings, persisted to a JSON file so that
  * registrations survive restarts and can be re-subscribed on boot.
+ *
+ * Lifecycle is prune-on-terminal: a registration is removed once its payment is
+ * delivered or the swap fails, so the file stays bounded. Writes are atomic
+ * (temp file + rename) so a crash mid-write cannot corrupt the store.
  */
 export class Registry {
   private readonly byId = new Map<string, Registration>();
@@ -54,7 +56,9 @@ export class Registry {
   private persist(): void {
     try {
       mkdirSync(dirname(this.filePath), { recursive: true });
-      writeFileSync(this.filePath, JSON.stringify([...this.byId.values()], null, 2));
+      const tmp = `${this.filePath}.tmp`;
+      writeFileSync(tmp, JSON.stringify([...this.byId.values()], null, 2));
+      renameSync(tmp, this.filePath); // atomic on the same filesystem
     } catch (err) {
       this.logger.error({ err, filePath: this.filePath }, "failed to persist registrations");
     }
@@ -69,10 +73,8 @@ export class Registry {
       topic: input.topic,
       label: input.label,
       swap: input.swap,
-      status: existing?.status ?? input.swap.status,
       createdAt: existing?.createdAt ?? now,
       updatedAt: now,
-      notifiedSettled: existing?.notifiedSettled ?? false,
     };
     this.byId.set(swapId, reg);
     this.persist();
@@ -89,31 +91,19 @@ export class Registry {
     return removed;
   }
 
-  /** All registrations. */
+  /** All registrations (the swaps still being monitored). */
   all(): Registration[] {
     return [...this.byId.values()];
   }
 
-  /** Registrations still awaiting settlement (the ones worth re-subscribing). */
-  active(): Registration[] {
-    return this.all().filter((r) => !r.notifiedSettled);
-  }
-
+  /** Record a new swap status. No-ops (and skips the disk write) if unchanged. */
   markStatus(swapId: string, status: BoltzSwapStatus): Registration | undefined {
     const reg = this.byId.get(swapId);
     if (!reg) return undefined;
-    reg.status = status;
+    if (reg.swap.status === status) return reg;
     reg.swap.status = status;
     reg.updatedAt = Date.now();
     this.persist();
     return reg;
-  }
-
-  markNotified(swapId: string): void {
-    const reg = this.byId.get(swapId);
-    if (!reg) return;
-    reg.notifiedSettled = true;
-    reg.updatedAt = Date.now();
-    this.persist();
   }
 }

@@ -26,7 +26,7 @@ describe("Registry", () => {
     const reg = makeRegistry(file);
     const added = reg.add({ swap: mockReverseSwap("s1"), topic: "t1", label: "lbl" });
     expect(added.swapId).toBe("s1");
-    expect(added.notifiedSettled).toBe(false);
+    expect(added.swap.status).toBe("swap.created");
     expect(reg.get("s1")?.topic).toBe("t1");
   });
 
@@ -42,16 +42,15 @@ describe("Registry", () => {
     expect(b.get("s2")?.swap.type).toBe("reverse");
   });
 
-  it("tracks status and notified flag; active() excludes settled", () => {
+  it("records status on the swap and skips no-op updates", () => {
     const reg = makeRegistry(file);
     reg.add({ swap: mockReverseSwap("s1"), topic: "t1" });
-    reg.add({ swap: mockReverseSwap("s2"), topic: "t2" });
 
     reg.markStatus("s1", "transaction.mempool");
-    expect(reg.get("s1")?.status).toBe("transaction.mempool");
-
-    reg.markNotified("s1");
-    expect(reg.active().map((r) => r.swapId)).toEqual(["s2"]);
+    expect(reg.get("s1")?.swap.status).toBe("transaction.mempool");
+    const before = reg.get("s1")!.updatedAt;
+    const same = reg.markStatus("s1", "transaction.mempool"); // unchanged -> no write
+    expect(same?.updatedAt).toBe(before);
   });
 
   it("removes a registration", () => {
