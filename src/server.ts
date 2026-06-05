@@ -1,0 +1,92 @@
+import Fastify from "fastify";
+import { z } from "zod";
+import type { BoltzReverseSwap, BoltzSwapStatus, SwapManagerClient } from "@arkade-os/boltz-swap";
+import type { Logger } from "./logger.js";
+import type { Registry } from "./registry.js";
+
+/**
+ * A reverse swap as handed over by the wallet. Validated loosely: we only require
+ * the fields the SwapManager needs to monitor it (id, reverse discriminator,
+ * status). `preimage` may be redacted by the wallet since we never claim.
+ */
+const reverseSwapSchema = z
+  .object({
+    id: z.string().min(1),
+    type: z.literal("reverse"),
+    status: z.string().min(1),
+    createdAt: z.number().optional(),
+    preimage: z.string().optional(),
+    request: z.unknown().optional(),
+    response: z.unknown().optional(),
+  })
+  .passthrough();
+
+const registerSchema = z.object({
+  topic: z.string().min(1),
+  label: z.string().optional(),
+  swap: reverseSwapSchema,
+});
+
+export interface ServerDeps {
+  registry: Registry;
+  manager: SwapManagerClient;
+  /** Inject a synthetic swap update through the same pipeline (for manual testing). */
+  simulate: (swap: BoltzReverseSwap, oldStatus: BoltzSwapStatus) => void;
+  logger: Logger;
+}
+
+export function buildServer(deps: ServerDeps) {
+  const { registry, manager, simulate, logger } = deps;
+  const app = Fastify({ loggerInstance: logger });
+
+  app.get("/health", async () => {
+    const stats = await manager.getStats();
+    return {
+      status: "ok",
+      wsConnected: stats.websocketConnected,
+      monitoredSwaps: stats.monitoredSwaps,
+      usePollingFallback: stats.usePollingFallback,
+      registrations: registry.all().length,
+    };
+  });
+
+  // Opt-in, per-payment registration: the wallet posts each invoice's reverse swap.
+  app.post("/register", async (request, reply) => {
+    const parsed = registerSchema.safeParse(request.body);
+    if (!parsed.success) {
+      return reply.code(400).send({ error: "invalid body", issues: parsed.error.issues });
+    }
+    const swap = parsed.data.swap as unknown as BoltzReverseSwap;
+    const reg = registry.add({ swap, topic: parsed.data.topic, label: parsed.data.label });
+    await manager.addSwap(swap);
+    return reply.code(201).send({ ok: true, registration: reg });
+  });
+
+  app.get("/register", () => ({ registrations: registry.all() }));
+
+  app.delete<{ Params: { swapId: string } }>("/register/:swapId", async (request, reply) => {
+    const { swapId } = request.params;
+    await manager.removeSwap(swapId);
+    const removed = registry.remove(swapId);
+    return reply.code(removed ? 200 : 404).send({ ok: removed });
+  });
+
+  // Manual testing helper: pretend a status update arrived for a registered swap.
+  //   curl -X POST localhost:3000/simulate -d '{"swapId":"x","status":"invoice.settled"}'
+  app.post("/simulate", (request, reply) => {
+    const parsed = z
+      .object({ swapId: z.string().min(1), status: z.string().min(1) })
+      .safeParse(request.body);
+    if (!parsed.success) {
+      return reply.code(400).send({ error: "invalid body", issues: parsed.error.issues });
+    }
+    const reg = registry.get(parsed.data.swapId);
+    if (!reg) return reply.code(404).send({ error: "unknown swapId" });
+    const oldStatus = reg.swap.status;
+    const swap: BoltzReverseSwap = { ...reg.swap, status: parsed.data.status as BoltzSwapStatus };
+    simulate(swap, oldStatus);
+    return reply.send({ ok: true });
+  });
+
+  return app;
+}
