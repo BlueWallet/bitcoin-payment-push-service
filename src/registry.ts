@@ -5,7 +5,7 @@ import type { Logger } from "./logger.js";
 
 export interface Registration {
   swapId: string;
-  /** ntfy topic to push to (extensible to device tokens for other providers). */
+  /** ntfy topic, or preimage hash when using GroundControl. */
   topic: string;
   label?: string;
   /**

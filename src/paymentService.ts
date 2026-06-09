@@ -65,6 +65,7 @@ export async function attachPaymentNotifications(deps: PaymentServiceDeps): Prom
       let lastErr: unknown;
       for (let attempt = 0; attempt < deliveryAttempts; attempt++) {
         try {
+          const swap = reg.swap;
           await notifier.notify(
             { topic: reg.topic },
             {
@@ -72,6 +73,9 @@ export async function attachPaymentNotifications(deps: PaymentServiceDeps): Prom
               body: `⚡ Lightning payment settled${suffix}.`,
               tags: ["zap", "moneybag"],
               priority: "high",
+              memo: reg.label ?? swap.request.description ?? "",
+              preimage: swap.preimage,
+              amtPaidSat: swap.request.invoiceAmount,
             },
           );
           // Delivered: stop watching and prune.
