@@ -13,7 +13,8 @@ const networkSchema = z.enum([
   "regtest",
 ]);
 
-const envSchema = z.object({
+const envSchema = z
+  .object({
   NETWORK: networkSchema.default("mutinynet"),
   // Boltz REST base. The boltz-swap SwapManager derives its websocket URL from this.
   BOLTZ_API_URL: z.string().url().default("https://api.boltz.mutinynet.arkade.sh"),
@@ -21,12 +22,23 @@ const envSchema = z.object({
   ESPLORA_URL: z.string().url().default("https://mutinynet.com/api"),
   PORT: z.coerce.number().int().positive().default(3000),
   POLL_INTERVAL_MS: z.coerce.number().int().positive().default(30_000),
-  NTFY_BASE_URL: z.string().url().default("https://ntfy.sh"),
+  NTFY_BASE_URL: z.string().url().optional(),
+  GROUNDCONTROL_BASE_URL: z.string().url().optional(),
   DATA_FILE: z.string().default("./data/registrations.json"),
   LOG_LEVEL: z
     .enum(["fatal", "error", "warn", "info", "debug", "trace", "silent"])
     .default("info"),
-});
+  })
+  .superRefine((data, ctx) => {
+    const hasNtfy = Boolean(data.NTFY_BASE_URL);
+    const hasGroundControl = Boolean(data.GROUNDCONTROL_BASE_URL);
+    if (hasNtfy === hasGroundControl) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "Set exactly one of NTFY_BASE_URL or GROUNDCONTROL_BASE_URL",
+      });
+    }
+  });
 
 export type Network = z.infer<typeof networkSchema>;
 export type Config = z.infer<typeof envSchema>;

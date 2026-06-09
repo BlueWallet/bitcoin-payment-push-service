@@ -60,4 +60,16 @@ describe("Registry", () => {
     expect(reg.remove("s1")).toBe(false);
     expect(reg.all()).toHaveLength(0);
   });
+
+  it("load is a no-op when the persistence file does not exist yet", () => {
+    const reg = makeRegistry(file);
+    reg.load();
+    expect(reg.all()).toHaveLength(0);
+  });
+
+  it("markStatus returns undefined for unknown swap ids", () => {
+    const reg = makeRegistry(file);
+    expect(reg.markStatus("missing", "invoice.settled")).toBeUndefined();
+  });
 });
+

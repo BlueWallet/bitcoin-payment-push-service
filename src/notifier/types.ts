@@ -1,5 +1,5 @@
 export interface NotifyTarget {
-  /** ntfy topic. For other providers this would carry a device token instead. */
+  /** ntfy topic, or preimage hash (hex) for GroundControl. */
   topic: string;
 }
 
@@ -9,6 +9,10 @@ export interface NotifyPayload {
   /** Optional tags/emoji (ntfy supports these); ignored by providers that can't use them. */
   tags?: string[];
   priority?: "min" | "low" | "default" | "high" | "max";
+  memo?: string;
+  /** Empty when the wallet redacts the preimage at /register. */
+  preimage?: string;
+  amtPaidSat?: number;
 }
 
 /**

@@ -1,3 +1,4 @@
+import { vi } from "vitest";
 import type { BoltzReverseSwap, BoltzSwapStatus } from "@arkade-os/boltz-swap";
 import type { Logger } from "../src/logger.js";
 
@@ -13,27 +14,36 @@ export const silentLogger = {
   child: () => silentLogger,
 } as unknown as Logger;
 
+export interface MockReverseSwapOptions {
+  preimage?: string;
+  preimageHash?: string;
+  invoiceAmount?: number;
+  description?: string;
+}
+
 /** A minimal but type-complete pending reverse swap, as a wallet would register. */
 export function mockReverseSwap(
   id = "reverse-swap-1",
   status: BoltzSwapStatus = "swap.created",
+  opts: MockReverseSwapOptions = {},
 ): BoltzReverseSwap {
   return {
     id,
     type: "reverse",
     createdAt: Math.floor(Date.now() / 1000),
-    preimage: "", // redacted by the wallet; monitoring never needs it
+    preimage: opts.preimage ?? "",
     status,
     request: {
       claimPublicKey: "0".repeat(66),
-      invoiceAmount: 10_000,
-      preimageHash: "0".repeat(64),
+      invoiceAmount: opts.invoiceAmount ?? 10_000,
+      preimageHash: opts.preimageHash ?? "ab".repeat(32),
+      ...(opts.description ? { description: opts.description } : {}),
     },
     response: {
       id,
       invoice: "lnbc100n1ptest",
       lockupAddress: "ark1test",
-      onchainAmount: 10_000,
+      onchainAmount: opts.invoiceAmount ?? 10_000,
       refundPublicKey: "0".repeat(66),
       timeoutBlockHeights: {
         refund: 100,
@@ -44,3 +54,27 @@ export function mockReverseSwap(
     },
   } as unknown as BoltzReverseSwap;
 }
+
+/** Stub global fetch with a controllable response factory. */
+export function stubFetch(
+  impl: (...args: Parameters<typeof fetch>) => ReturnType<typeof fetch>,
+): ReturnType<typeof vi.fn> {
+  const fetchMock = vi.fn(impl);
+  vi.stubGlobal("fetch", fetchMock);
+  return fetchMock;
+}
+
+export function stubFetchOk(): ReturnType<typeof vi.fn> {
+  return stubFetch(async () => ({ ok: true, status: 200, text: async () => "" }) as Response);
+}
+
+export function lastFetchRequest(fetchMock: ReturnType<typeof vi.fn>): {
+  url: string;
+  init: RequestInit;
+} {
+  const call = fetchMock.mock.calls.at(-1) as unknown as [string, RequestInit] | undefined;
+  if (!call) throw new Error("fetch was not called");
+  return { url: call[0], init: call[1] };
+}
+
+export const flush = (): Promise<void> => new Promise((r) => setTimeout(r, 0));

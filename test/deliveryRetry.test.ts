@@ -6,9 +6,8 @@ import type { SwapManagerClient } from "@arkade-os/boltz-swap";
 import { Registry } from "../src/registry.js";
 import { attachPaymentNotifications, type PaymentService } from "../src/paymentService.js";
 import type { Notifier } from "../src/notifier/types.js";
-import { silentLogger, mockReverseSwap } from "./helpers.js";
+import { mockReverseSwap, silentLogger } from "./helpers.js";
 
-/** Minimal SwapManagerClient — only the methods attachPaymentNotifications uses. */
 function fakeManager(removeSwap: () => Promise<void>): SwapManagerClient {
   return {
     onSwapUpdate: async () => () => {},
@@ -28,13 +27,13 @@ describe("delivery reliability", () => {
     rmSync(dir, { recursive: true, force: true });
   });
 
-  it("recovers a settled swap via the sweep when the first delivery fails (no lost push)", async () => {
+  it("keeps a settled swap registered after inline retries exhaust, then delivers on sweep", async () => {
     dir = mkdtempSync(join(tmpdir(), "deliv-"));
 
     let calls = 0;
     const notify = vi.fn(async () => {
       calls += 1;
-      if (calls === 1) throw new Error("ntfy transiently down");
+      if (calls === 1) throw new Error("push provider down");
     });
     const notifier = { notify } as unknown as Notifier;
 
@@ -46,18 +45,19 @@ describe("delivery reliability", () => {
       notifier,
       logger: silentLogger,
       sweepIntervalMs: 25,
-      deliveryAttempts: 1, // one shot per round, so the failure must be recovered by the sweep
+      deliveryAttempts: 1,
     });
 
-    // A swap that is already settled but not yet delivered (e.g. settled while the
-    // process was down, or a prior delivery failed). The sweep must deliver it.
     registry.add({ swap: mockReverseSwap("s1", "invoice.settled"), topic: "t1" });
 
-    // The first delivery throws, but the swap is not lost: a later sweep
-    // redelivers successfully → push lands, swap is pruned. If a failure dropped
-    // the push, it would stay at 1 call and never be pruned.
-    await vi.waitFor(() => expect(registry.get("s1")).toBeUndefined(), { timeout: 1500 });
-    expect(calls).toBeGreaterThanOrEqual(2);
+    await vi.waitFor(
+      () => {
+        expect(registry.get("s1")).toBeUndefined();
+        expect(calls).toBeGreaterThanOrEqual(2);
+      },
+      { timeout: 1500 },
+    );
     expect(removed).toHaveBeenCalledWith("s1");
+    expect(notify).toHaveBeenCalledTimes(calls);
   });
 });
